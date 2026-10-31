@@ -23,9 +23,29 @@ export async function POST(req: NextRequest) {
 
     // 2. If Stripe Secret Key is configured
     if (process.env.STRIPE_SECRET_KEY && !process.env.STRIPE_SECRET_KEY.startsWith('sk_test_...')) {
+      const hasCustomPriceId =
+        planConfig.priceId &&
+        !planConfig.priceId.includes('placeholder') &&
+        !planConfig.priceId.endsWith('...');
+
+      const lineItem = hasCustomPriceId
+        ? { price: planConfig.priceId, quantity: 1 }
+        : {
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: `AskAisle ${planConfig.name} Plan`,
+                description: `Up to ${planConfig.quotaMessages.toLocaleString()} AI customer responses / month`,
+              },
+              unit_amount: planConfig.priceUsd * 100,
+              recurring: { interval: 'month' as const },
+            },
+            quantity: 1,
+          };
+
       const session = await stripe.checkout.sessions.create({
         mode: 'subscription',
-        line_items: [{ price: planConfig.priceId, quantity: 1 }],
+        line_items: [lineItem],
         subscription_data: {
           trial_period_days: 14,
           metadata: { shop_id: shop_id || '', plan: normalizedPlan },
