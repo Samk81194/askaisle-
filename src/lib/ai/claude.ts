@@ -47,7 +47,9 @@ ${formattedContext}`;
 }
 
 /**
- * Streams Claude Haiku response for lightning-fast, cost-effective chat
+ * Streams AI response:
+ * - Uses Anthropic Claude Haiku (`claude-3-5-haiku-20241022`) if ANTHROPIC_API_KEY is set.
+ * - Automatically falls back to Google Gemini Free Tier (`gemini-2.5-flash`) if GEMINI_API_KEY is set ($0 cost!).
  */
 export async function streamClaudeResponse({
   shopName,
@@ -56,16 +58,58 @@ export async function streamClaudeResponse({
   history = [],
 }: StreamChatParams) {
   const systemPrompt = buildSystemPrompt(shopName, contextChunks);
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
 
+  // If user configured Free Gemini API key, use Gemini Free Tier ($0 cost) or when Anthropic key is absent
+  if (geminiKey && (!anthropicKey || anthropicKey.startsWith('sk-ant-api...') || process.env.PREFER_FREE_AI !== 'false')) {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [
+            ...history.slice(-4).map((m) => ({
+              role: m.role === 'assistant' ? 'model' : 'user',
+              parts: [{ text: m.content }],
+            })),
+            { role: 'user', parts: [{ text: userMessage }] },
+          ],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 600,
+          },
+        }),
+      }
+    );
+
+    const data = await res.json();
+    const replyText =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "I'm sorry, I couldn't generate a response right now.";
+
+    // Yield compatible async generator matching Anthropic stream format
+    async function* geminiStreamGenerator() {
+      yield {
+        type: 'content_block_delta' as const,
+        delta: { type: 'text_delta' as const, text: replyText },
+      };
+    }
+    return geminiStreamGenerator();
+  }
+
+  // Standard Anthropic Claude Haiku Stream
   const messages: Anthropic.MessageParam[] = [
-    ...history.slice(-4), // keep last 4 exchanges for short-term memory
+    ...history.slice(-4),
     { role: 'user', content: userMessage },
   ];
 
   const stream = await anthropic.messages.stream({
     model: 'claude-3-5-haiku-20241022',
     max_tokens: 600,
-    temperature: 0.2, // low temperature to ensure strict adherence to context
+    temperature: 0.2,
     system: systemPrompt,
     messages,
   });
